@@ -1,10 +1,12 @@
 import urllib
 
 from pyramid.authentication import AuthTktAuthenticationPolicy
+from pyramid.authentication import BasicAuthAuthenticationPolicy
 from pyramid.authorization import ACLAuthorizationPolicy
 from pyramid.config import Configurator
 from pyramid.httpexceptions import HTTPForbidden
 from pyramid.httpexceptions import HTTPFound
+from pyramid.httpexceptions import HTTPUnauthorized
 from pyramid.security import ALL_PERMISSIONS
 from pyramid.security import Allow
 from pyramid.security import Authenticated
@@ -109,7 +111,7 @@ class PageFactory(object):
         page.__name__ = key
         return page
 
-def groupfinder(userid, request):
+def groupfinder(userid, *args):
     user = USERS.get(userid)
     if user:
         return ['g:%s' % g for g in user.groups]
@@ -123,6 +125,13 @@ def forbidden_view(request):
 
     loc = request.route_url('login', _query=(('next', request.path),))
     return HTTPFound(location=loc)
+
+@forbidden_view_config(containment=UserFactory)
+def admin_forbidden_view(request):
+    response = HTTPUnauthorized()
+    response.headers.update(forget(request))
+    return response
+
 
 @view_config(
     route_name='home',
@@ -305,17 +314,30 @@ def edit_page_view(request):
 
 ### CONFIGURE PYRAMID
 def main(global_settings, **settings):
-    authn_policy = AuthTktAuthenticationPolicy(
+    authtkt_authn_policy = AuthTktAuthenticationPolicy(
         settings['auth.secret'],
         callback=groupfinder,
+    )
+    basic_authn_policy = BasicAuthAuthenticationPolicy(
+        groupfinder,
+        realm=settings['auth.realm'],
     )
     authz_policy = ACLAuthorizationPolicy()
 
     config = Configurator(
         settings=settings,
-        authentication_policy=authn_policy,
         authorization_policy=authz_policy,
         root_factory=RootFactory,
+    )
+
+    config.include('pyramid_contextauth')
+    config.register_authentication_policy(
+        authtkt_authn_policy,
+        (RootFactory, PageFactory),
+    )
+    config.register_authentication_policy(
+        basic_authn_policy,
+        (UserFactory, User),
     )
 
     config.add_route('home', '/')
@@ -339,6 +361,7 @@ def main(global_settings, **settings):
 ### SIMPLE STARTUP
 if __name__ == '__main__':
     settings = {
+        'auth.realm': 'demo',
         'auth.secret': 'seekrit',
         'mako.directories': '%s:templates' % __name__,
     }
